@@ -1,3 +1,8 @@
+"use client";
+
+import { DemoUserSwitcher } from "@/components/DemoUserSwitcher";
+import { DemoSimulator } from "@/components/DemoSimulator";
+
 export default function Home() {
   const agents = [
     { name: "Customer Support Bot", status: "green", score: 92 },
@@ -31,9 +36,13 @@ export default function Home() {
             </a>
           </nav>
         </div>
+        <div className="mx-auto max-w-6xl px-6 pb-3">
+          <DemoUserSwitcher />
+        </div>
       </header>
 
       <section className="mx-auto max-w-6xl px-6 py-8">
+        <DemoSimulator />
         <div className="mb-6">
           <h2 className="text-lg font-semibold">Fleet Overview</h2>
           <p className="text-sm text-zinc-600">
