@@ -10,22 +10,24 @@ export default function FlaggedPage() {
   const router = useRouter();
   const { agents, cases, approveCase, rejectCase, escalateCase, simulateNewRequest } = useDemo();
   
-  const agentId = params.agentId;
+  const agentId = params?.agentId;
   const caseId = searchParams.get("case");
   
-  const agent = agents.find((a) => a.id === agentId);
-  const openCases = cases.filter(
-    (c) => c.agentId === agentId && c.status === "open"
-  );
+  const agent = agentId ? agents.find((a) => a.id === agentId) : null;
+  const openCases = agentId
+    ? cases.filter((c) => c.agentId === agentId && c.status === "open")
+    : [];
   const selectedCase = cases.find((c) => c.id === caseId);
 
   const [approvedText, setApprovedText] = useState("");
 
   const handleRowClick = (caseId: string) => {
+    if (!agentId) return;
     router.push(`/agents/${agentId}/flagged?case=${caseId}`);
   };
 
   const closeDrawer = () => {
+    if (!agentId) return;
     router.push(`/agents/${agentId}/flagged`);
     setApprovedText("");
   };
@@ -49,6 +51,7 @@ export default function FlaggedPage() {
   };
 
   const handleSimulate = () => {
+    if (!agentId) return;
     simulateNewRequest(agentId, "salary-data-request");
   };
 
