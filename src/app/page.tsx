@@ -1,17 +1,30 @@
 "use client";
 
+import Link from "next/link";
 import { DemoUserSwitcher } from "@/components/DemoUserSwitcher";
 import { DemoSimulator } from "@/components/DemoSimulator";
 
 export default function Home() {
   const agents = [
-    { name: "Customer Support Bot", status: "green", score: 92 },
-    { name: "HR Policy Assistant", status: "yellow", score: 78 },
-    { name: "Internal Dev Copilot", status: "red", score: 61 },
+    {
+      id: "customer-support-bot",
+      name: "Customer Support Bot",
+      status: "green",
+      score: 92,
+    },
+    {
+      id: "hr-policy-assistant",
+      name: "HR Policy Assistant",
+      status: "yellow",
+      score: 78,
+    },
+    {
+      id: "internal-dev-copilot",
+      name: "Internal Dev Copilot",
+      status: "red",
+      score: 61,
+    },
   ] as const;
-
-  const toSlug = (name: string) =>
-    name.toLowerCase().split(" ").filter(Boolean).join("-");
 
   return (
     <main className="min-h-screen bg-zinc-50">
@@ -79,7 +92,7 @@ export default function Home() {
           <div className="space-y-3">
             {agents.map((a) => (
               <div
-                key={a.name}
+                key={a.id}
                 className="flex items-center justify-between rounded-lg border px-4 py-3"
               >
                 <div className="flex items-center gap-3">
@@ -101,12 +114,12 @@ export default function Home() {
                   </div>
                 </div>
 
-                <a
-                  href={`/agents/${toSlug(a.name)}`}
+                <Link
+                  href={`/agents/${a.id}`}
                   className="rounded-md border px-3 py-2 text-sm hover:bg-zinc-50"
                 >
                   View details
-                </a>
+                </Link>
               </div>
             ))}
           </div>
