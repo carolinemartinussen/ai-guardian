@@ -2,22 +2,157 @@
 
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useDemo } from "@/contexts/DemoContext";
-import { useState } from "react";
+import { useMonitorStream } from "@/hooks/useMonitorStream";
+import { AgentHeader } from "@/components/AgentHeader";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { MonitoredResponse } from "@/types/monitoring";
+import Link from "next/link";
+
+function generatePatternKey(text: string): string {
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return `pattern:${Math.abs(hash).toString(36)}`;
+}
 
 export default function FlaggedPage() {
   const params = useParams<{ agentId: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { agents, cases, approveCase, rejectCase, escalateCase, simulateNewRequest } = useDemo();
+  const { 
+    cases, 
+    approveCase, 
+    rejectCase, 
+    escalateCase, 
+    currentUser, 
+    addAuditEvent,
+    approvedPatterns,
+    recordPatternReuse,
+    upsertApprovedPattern,
+    monitoredResponsesByAgent,
+    upsertMonitoredResponse,
+  } = useDemo();
   
   const agentId = params?.agentId;
   const caseId = searchParams.get("case");
-  
-  const agent = agentId ? agents.find((a) => a.id === agentId) : null;
-  const openCases = agentId
-    ? cases.filter((c) => c.agentId === agentId && c.status === "open")
-    : [];
-  const selectedCase = cases.find((c) => c.id === caseId);
+
+  // Use refs to store callbacks to prevent re-renders and ensure stable references
+  // Initialize refs with current values to avoid undefined on first render
+  const addAuditEventRef = useRef(addAuditEvent);
+  const approvedPatternsRef = useRef(approvedPatterns);
+  const recordPatternReuseRef = useRef(recordPatternReuse);
+  const upsertApprovedPatternRef = useRef(upsertApprovedPattern);
+  const upsertMonitoredResponseRef = useRef(upsertMonitoredResponse);
+
+  // Update refs when values change (doesn't cause re-render)
+  useEffect(() => {
+    addAuditEventRef.current = addAuditEvent;
+    approvedPatternsRef.current = approvedPatterns;
+    recordPatternReuseRef.current = recordPatternReuse;
+    upsertApprovedPatternRef.current = upsertApprovedPattern;
+    upsertMonitoredResponseRef.current = upsertMonitoredResponse;
+  }, [addAuditEvent, approvedPatterns, recordPatternReuse, upsertApprovedPattern, upsertMonitoredResponse]);
+
+  // Real-time monitoring stream - use stable callback refs to prevent render-time updates
+  const {
+    responses,
+    needsReviewCount,
+    highRiskCount,
+    currentTrustScore,
+    approveResponse: approveMonitoredResponse,
+  } = useMonitorStream(
+    agentId, 
+    currentUser.name, 
+    addAuditEventRef.current,
+    approvedPatternsRef.current,
+    recordPatternReuseRef.current,
+    upsertApprovedPatternRef.current,
+    upsertMonitoredResponseRef.current
+  );
+
+  // Convert MonitoredResponse to display format (combine with existing cases)
+  // This is the queue list - only shows open/flagged items
+  const flaggedResponses = useMemo(() => {
+    const monitored = responses
+      .filter((r) => r.status !== "safe")
+      .map((r) => ({
+        id: r.id,
+        agentId: r.agentId,
+        patternKey: `monitored-${r.id}`,
+        severity: r.status,
+        category: r.findings[0]?.category || "General",
+        question: r.userQuery,
+        draftAnswer: r.aiResponse,
+        confidence: r.findings[0]?.confidence || r.trustScore,
+        citationsCount: r.findings[0]?.citationsCount || 0,
+        status: "open" as const,
+        createdAt: r.timestamp,
+      }));
+    
+    // Combine with existing cases
+    const existing = agentId
+      ? cases.filter((c) => c.agentId === agentId && c.status === "open")
+      : [];
+    
+    return [...monitored, ...existing];
+  }, [responses, cases, agentId]);
+
+  // Separate lookup collection for deep links - includes ALL items (not just open/flagged)
+  // Use persisted responses from DemoContext, not just current session responses
+  const allItemsLookup = useMemo(() => {
+    // Get ALL persisted monitored responses for this agent (including safe)
+    const persistedResponses = agentId ? (monitoredResponsesByAgent[agentId] || []) : [];
+    
+    // Combine persisted responses with current session responses (dedupe by id)
+    const allResponsesMap = new Map<string, typeof persistedResponses[0]>();
+    persistedResponses.forEach((r) => allResponsesMap.set(r.id, r));
+    responses.forEach((r) => allResponsesMap.set(r.id, r));
+    const allMonitoredResponses = Array.from(allResponsesMap.values());
+    
+    // Include ALL monitored responses (including safe)
+    const allMonitored = allMonitoredResponses.map((r) => ({
+      id: r.id,
+      agentId: r.agentId,
+      patternKey: `monitored-${r.id}`,
+      severity: r.status,
+      category: r.findings[0]?.category || "General",
+      question: r.userQuery,
+      draftAnswer: r.aiResponse,
+      confidence: r.findings[0]?.confidence || r.trustScore,
+      citationsCount: r.findings[0]?.citationsCount || 0,
+      status: "open" as const, // For display purposes, treat monitored responses as "open"
+      createdAt: r.timestamp,
+    }));
+    
+    // Include ALL cases for the agent (not just open)
+    const allCases = agentId
+      ? cases
+          .filter((c) => c.agentId === agentId)
+          .map((c) => ({
+            id: c.id,
+            agentId: c.agentId,
+            patternKey: c.patternKey,
+            severity: c.severity,
+            category: c.category,
+            question: c.question,
+            draftAnswer: c.draftAnswer,
+            confidence: c.confidence,
+            citationsCount: c.citationsCount,
+            status: c.status,
+            createdAt: c.createdAt,
+          }))
+      : [];
+    
+    return [...allMonitored, ...allCases];
+  }, [responses, cases, agentId, monitoredResponsesByAgent]);
+
+  // Use lookup collection to resolve selectedResponse for deep links
+  const selectedResponse = caseId ? allItemsLookup.find((r) => r.id === caseId) : null;
+
+  const itemsRequiringReview = needsReviewCount + highRiskCount;
 
   const [approvedText, setApprovedText] = useState("");
 
@@ -34,7 +169,16 @@ export default function FlaggedPage() {
 
   const handleApprove = () => {
     if (!caseId || !approvedText.trim()) return;
-    approveCase(caseId, approvedText);
+    
+    // Check if it's a monitored response or existing case
+    const isMonitored = responses.some((r) => r.id === caseId);
+    
+    if (isMonitored) {
+      approveMonitoredResponse(caseId, approvedText, currentUser.name);
+    } else {
+      approveCase(caseId, approvedText);
+    }
+    
     closeDrawer();
   };
 
@@ -48,11 +192,6 @@ export default function FlaggedPage() {
     if (!caseId) return;
     escalateCase(caseId);
     closeDrawer();
-  };
-
-  const handleSimulate = () => {
-    if (!agentId) return;
-    simulateNewRequest(agentId, "salary-data-request");
   };
 
   const formatDate = (dateString: string) => {
@@ -77,64 +216,32 @@ export default function FlaggedPage() {
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "green":
-        return "text-emerald-600";
-      case "yellow":
-        return "text-amber-600";
-      case "red":
-        return "text-red-600";
-      default:
-        return "text-zinc-600";
-    }
-  };
-
-  if (!agent) {
-    return (
-      <main className="min-h-screen bg-zinc-50 p-6">
-        <p className="text-sm text-zinc-600">Agent not found</p>
-      </main>
-    );
-  }
-
   return (
-    <main className="min-h-screen bg-zinc-50">
-      <div className="border-b bg-white">
-        <div className="mx-auto max-w-6xl px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-semibold">{agent.name}</h1>
-              <p className="mt-1 text-sm text-zinc-600">
-                Status: <span className={getStatusColor(agent.status)}>{agent.status}</span> • Trust Score: {agent.trustScore}/100
-              </p>
-            </div>
-            <button
-              onClick={handleSimulate}
-              className="rounded-md bg-zinc-800 px-4 py-2 text-sm text-white hover:bg-zinc-700"
-            >
-              Simulate new request
-            </button>
-          </div>
-        </div>
-      </div>
+    <main className="min-h-screen bg-white">
+      <AgentHeader
+        itemsRequiringReview={itemsRequiringReview}
+        slaRemaining="4h"
+        reviewButtonLabel="Review Queue"
+        reviewButtonDisabled={true}
+      />
 
-      <div className="mx-auto max-w-6xl px-6 py-6">
+      {/* Existing flagged content */}
+      <div className="mx-auto max-w-7xl px-6 py-6">
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">Flagged Responses</h2>
+          <h2 className="text-lg font-semibold">Review Queue</h2>
           <p className="text-sm text-zinc-600">
-            {openCases.length} open case{openCases.length !== 1 ? "s" : ""}
+            {flaggedResponses.length} item{flaggedResponses.length !== 1 ? "s" : ""} requiring review
           </p>
         </div>
 
         <div className="rounded-xl border bg-white">
-          {openCases.length === 0 ? (
+          {flaggedResponses.length === 0 ? (
             <div className="p-8 text-center text-sm text-zinc-500">
               No open cases
             </div>
           ) : (
             <div className="divide-y">
-              {openCases.map((caseItem) => (
+              {flaggedResponses.map((caseItem) => (
                 <button
                   key={caseItem.id}
                   onClick={() => handleRowClick(caseItem.id)}
@@ -163,13 +270,13 @@ export default function FlaggedPage() {
       </div>
 
       {/* Drawer */}
-      {caseId && selectedCase && (
+      {caseId && (
         <>
           <div
             className="fixed inset-0 bg-black/20 z-40"
             onClick={closeDrawer}
           />
-          <div className="fixed right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl z-50 overflow-y-auto">
+          <div className="fixed right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl z-50 overflow-y-auto text-zinc-900">
             <div className="border-b p-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Case Details</h2>
@@ -182,16 +289,17 @@ export default function FlaggedPage() {
               </div>
             </div>
 
-            <div className="p-6 space-y-6">
+            {selectedResponse ? (
+              <div className="p-6 space-y-6 text-zinc-900">
               <div>
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Severity
                 </label>
                 <div className="mt-1">
                   <span
-                    className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${getSeverityColor(selectedCase.severity)}`}
+                    className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${getSeverityColor(selectedResponse.severity)}`}
                   >
-                    {selectedCase.severity.replace("_", " ")}
+                    {selectedResponse.severity.replace("_", " ")}
                   </span>
                 </div>
               </div>
@@ -200,29 +308,29 @@ export default function FlaggedPage() {
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Category
                 </label>
-                <p className="mt-1 text-sm">{selectedCase.category}</p>
+                <p className="mt-1 text-sm text-zinc-900">{selectedResponse.category}</p>
               </div>
 
               <div>
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Confidence
                 </label>
-                <p className="mt-1 text-sm">{selectedCase.confidence}%</p>
+                <p className="mt-1 text-sm text-zinc-900">{selectedResponse.confidence}%</p>
               </div>
 
               <div>
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Citations Count
                 </label>
-                <p className="mt-1 text-sm">{selectedCase.citationsCount}</p>
+                <p className="mt-1 text-sm text-zinc-900">{selectedResponse.citationsCount}</p>
               </div>
 
               <div>
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Question
                 </label>
-                <p className="mt-2 text-sm bg-zinc-50 rounded-md p-3">
-                  {selectedCase.question}
+                <p className="mt-2 text-sm bg-zinc-50 rounded-md p-3 text-zinc-900">
+                  {selectedResponse.question}
                 </p>
               </div>
 
@@ -230,10 +338,72 @@ export default function FlaggedPage() {
                 <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
                   Draft Answer
                 </label>
-                <p className="mt-2 text-sm bg-zinc-50 rounded-md p-3">
-                  {selectedCase.draftAnswer}
+                <p className="mt-2 text-sm bg-zinc-50 rounded-md p-3 text-zinc-900">
+                  {selectedResponse.draftAnswer}
                 </p>
               </div>
+
+              {/* Reuse / Approved response pattern */}
+              {(() => {
+                // Try to find pattern for approved text if it exists, or check if case was already approved
+                let patternKey: string | null = null;
+                
+                if (approvedText.trim()) {
+                  patternKey = generatePatternKey(approvedText.trim());
+                } else if ("patternKey" in selectedResponse && selectedResponse.patternKey) {
+                  // Check if there's a pattern for the case's patternKey
+                  patternKey = selectedResponse.patternKey;
+                }
+                
+                const pattern = patternKey && agentId
+                  ? approvedPatterns?.find(
+                      (p) => p.patternKey === patternKey && p.agentId === agentId
+                    )
+                  : null;
+
+                if (!pattern) return null;
+
+                const formatDate = (dateString: string) => {
+                  const date = new Date(dateString);
+                  return date.toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  });
+                };
+
+                return (
+                  <div className="border-t pt-6 space-y-3">
+                    <div>
+                      <label className="text-xs font-medium text-zinc-500 uppercase tracking-wide mb-2 block">
+                        Reuse / Approved response pattern
+                      </label>
+                      <div className="bg-zinc-50 rounded-md p-4 space-y-2">
+                        <p className="text-sm text-zinc-900">
+                          This approved response has been reused{" "}
+                          <span className="font-semibold">{pattern.reuseCount}</span> time{pattern.reuseCount !== 1 ? "s" : ""}
+                        </p>
+                        <p className="text-xs text-zinc-600">
+                          Approved by {pattern.approvedBy || "Unknown"}, {formatDate(pattern.approvedAt)}
+                        </p>
+                        <p className="text-xs text-zinc-600">
+                          Last used: {pattern.lastUsedAt ? formatDate(pattern.lastUsedAt) : "—"}
+                        </p>
+                        {pattern.reuseCount > 0 && agentId && (
+                          <Link
+                            href={`/agents/${agentId}/usage?pattern=${encodeURIComponent(pattern.patternKey)}`}
+                            className="inline-block mt-2 text-sm text-blue-600 hover:text-blue-700 hover:underline"
+                          >
+                            View usage →
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="border-t pt-6 space-y-4">
                 <div>
@@ -272,6 +442,39 @@ export default function FlaggedPage() {
                 </div>
               </div>
             </div>
+            ) : (
+              <div className="p-6">
+                <div className="text-center py-12">
+                  <svg
+                    className="mx-auto h-12 w-12 text-zinc-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="1.5"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <h3 className="mt-4 text-sm font-semibold text-zinc-900">
+                    Case not found
+                  </h3>
+                  <p className="mt-2 text-sm text-zinc-500">
+                    This case may have been resolved or removed.
+                  </p>
+                  {agentId && (
+                    <Link
+                      href={`/agents/${agentId}/flagged`}
+                      className="mt-4 inline-block text-sm text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      ← Back to queue
+                    </Link>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}

@@ -13,7 +13,9 @@ export const DEMO_USERS: DemoUser[] = [
 export type Agent = {
   id: string;
   name: string;
+  version: string;
   status: "green" | "yellow" | "red";
+  monitoringStatus: "monitoring" | "paused" | "error";
   trustScore: number;
 };
 
@@ -42,12 +44,33 @@ export type ApprovedResponse = {
   lastUsedAt: string | null;
 };
 
+export type ApprovedPattern = {
+  patternKey: string;
+  agentId: string;
+  approvedText: string;
+  approvedBy: string;
+  approvedAt: string;
+  reuseCount: number;
+  lastUsedAt?: string;
+  usage: Array<{
+    responseId: string;
+    timestamp: string;
+    userQuery?: string;
+    aiResponse?: string;
+    severity?: "safe" | "needs_review" | "high_risk";
+    category?: string;
+  }>;
+};
+
 export type AuditEvent = {
   id: string;
   agentId: string;
-  caseId?: string;
-  type: "CASE_APPROVED" | "CASE_REJECTED" | "CASE_ESCALATED" | "APPROVED_REUSED";
-  actorUserId: string;
   timestamp: string;
-  notes?: string;
+  actor: { name: string };
+  action: "CASE_APPROVED" | "CASE_REJECTED" | "CASE_ESCALATED" | "MONITOR_FLAGGED" | "MONITOR_SAFE" | "MONITORED_APPROVED" | "APPROVED_RESPONSE_REUSED";
+  severity?: "safe" | "needs_review" | "high_risk";
+  category?: string;
+  responseId?: string;
+  caseId?: string;
+  details: string;
 };
